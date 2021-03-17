@@ -13,20 +13,8 @@ import argparse
 
 
 from bisect import bisect_left 
-  
-# Start of all valid addresses here
-alladdress=[]
-# List of all CFI Instrumented Indirect call gadgets start and end and also the register usied for the indirect jump
-ICstartlist=[]
-ICendlist=[]
-ICreg=[]
 
-# Allowed targets for each indirect jump in the same order as above
-targets=[]
 
-#These are allowed registers in current architecture. Can add registers of other architecture here
-registers=["rip","rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","eax","ecx","edx","ebx","esp","ebp","esi","edi","ax","cx","dx","bx","sp","bp","si","di","ah","al","ch","cl","dh","dl","bh","bl","spl","bpl","sil","dil"]
-gadgetgraph=[]
 
 # Define each gadget
 class Gadgets:
@@ -46,25 +34,175 @@ class Gadgets:
         self.EC=EC
         self.nextptr=[]
 
-# This asks for a gadget starting at startaddr what are valid jump targets. The start address is enough but vital
-def oracle (startaddr):
-    graph=globals()['gadgetgraph']
-    search=int(int(startaddr,16))
-    #print(search)
-    idx = GadgetBinarySearch(graph,search)
-    #print(graph[idx].startaddr)
+class GadgetExtractor:
+    def __init__(self, binname):
+        self.proj = angr.Project(binname)
+        # Start of all valid addresses here
+        self.alladdress=[]
+        # List of all CFI Instrumented Indirect call gadgets start and end and also the register usied for the indirect jump
+        self.ICstartlist=[]
+        self.ICendlist=[]
+        self.ICreg=[]
 
-    if idx ==-1:
-        print("Address given not part of any gadget")
-        return []
+        # Allowed targets for each indirect jump in the same order as above
+        self.targets=[]
+        
+        self._populateInstrumentedICList(binname)
+        self._allowedtargetsIC()
+        self._analyzeGadgetList(binname,100)
 
-    if graph[idx].goestoallnodes == 1:
-        return ["*"]
+    def _populateInstrumentedICList(self, bname):
+        Address = os.popen('objdump -d '+bname).read().split('\n')
+        state=0
 
-    return graph[idx].EC
+        startinstrument=''
+        for line in Address:
+            length=len(line)
+            if (length>19 and line[0]==' ' and line[1]==' '):
+
+                self.alladdress += [line[2:8]]
+
+                if length >= 32:
+                    if line[32:36] == 'mova':
+                        if state == 0:
+                            state = 1
+                            startinstrument=line[2:8]
+                        else:
+                            state = 0
+
+                    if line[32:35] == 'ud2':
+                        if state == 1:
+                            state = 2
+                        else:
+                            state = 0
+
+                    if line[32:35] == 'cal':
+                        if state == 2:
+                            self.ICendlist += [int(line[2:8],16)]
+                            self.ICstartlist += [int(startinstrument,16)]
+                            [boolarr,insn,operands] = GetOperandsFromInstruction(line[32:])
+                            self.ICreg += operands
+                        
+                        state = 0 
+
+    # Simulate a set of instrumented instructions repetitively to see all valid jump targets.
+    # The simulation is done via angr
+    def _allowedtargetsIC (self):
+
+        for i in range(len(self.ICstartlist)):
+            allowedtargets=[]
+            for a in self.alladdress:
+                state = self.proj.factory.entry_state();
+                #state.regs.rip=state.solver.BVV(0x401203, 64);
+                state.regs.rip=state.solver.BVV(self.ICstartlist[i], 64);
+                testjmp=state.solver.BVV(int(a,16), 64);
+                toexecute="state.regs."+self.ICreg[i]+"=testjmp"
+                exec(toexecute)
+
+                #state.regs.rcx=state.solver.BVV(int(a,16), 64);
+                # state.regs.rax=state.solver.BVS('x', 64);
+                simgr = self.proj.factory.simulation_manager(state);
+                x=state.regs.rcx;
+                #print(simgr.active[0].regs.rax);
+                #print(simgr.active[0].regs.rip);
+                simgr.step();
+                #print(simgr.active[0].regs.rax);
+                oldrip = simgr.active[0].regs.rip
+                simgr.step();
+                newrip = simgr.active[0].regs.rip
+
+                if (state.solver.eval(oldrip) != state.solver.eval(newrip)):
+                    allowedtargets+=[a]
+            self.targets += [allowedtargets]
+
+    def _analyzeGadgetList(self, bname,depth):
+        RawGadget = os.popen('ROPgadget --depth '+str(depth)+' --dump --binary '+bname).read()
+        ListGadget = RawGadget.split('\n');
+        graph=[]
+        labelmap={}
+        label=0
+        for g in ListGadget:
+            EC=[]
+            if len(g)>=2 and g[0]=='0' and g[1]=='x':
+                Stmt =re.split(': | ; | //',g)
+                [s1,s2] = Bound(Stmt)
+
+                if len(self.ICstartlist) >=1:
+                    index = BinarySearch(self.ICstartlist, s1)
+                else:
+                    index = -1
+
+                if (index!=-1 and (self.ICstartlist[index] >= s1) and (self.ICstartlist[index] < s2)):
+                        EC += self.targets[index]
+                else:
+                    EC = GetEC(Stmt)
+                    tempEC=[]
+                    for e in EC:
+                        if (IsMemLocation(e)):
+                            if ((int(e[2:],16) < s1) or (int(e[2:],16) > s2)):
+                                tempEC += [e[2:]]
+                        else:
+                            tempEC += [e]
+ 
+                    EC = tempEC
+
+
+                labelmap[s1]=label
+                graph.append(Gadgets(label,g[1:],s1,s2,EC))
+                label=label+1
+
+
+        for g in graph:
+            for e in g.EC:
+                if e =='*':
+                    g.goestoallnodes=1
+                    g.nextptr=[]
+                    continue
+                if IsRegister(e):
+                    g.nextptr=[]
+                    g.goestoallnodes=1
+                    continue
+                if int(e,16) in labelmap.keys():
+                    g.nextptr += [labelmap[int(e,16)]]
+ 
+
+        #for g in graph:
+            #print("Gadget no :",g.idno) 
+            #print("Instructions are as follows:")
+            #print(g.insnlist)
+            #print("Can the gadget go to every location? ",g.goestoallnodes)
+            #if (g.goestoallnodes == 0):
+                #print("Gadgets we can jump to with label no:")
+                #print(g.nextptr)
+                #print("Absolute addresses this gadget can jump to: ")
+                #print(g.EC)
+            #print('\n')
+
+        graph.sort(key= lambda d: d.startaddr)
+        self.gadgetgraph = graph
+        
+
+    # This asks for a gadget starting at startaddr what are valid jump targets. The start address is enough but vital
+    def __call__(self, startaddr):
+        graph = self.gadgetgraph
+        search=int(int(startaddr,16))
+        #print(search)
+        idx = GadgetBinarySearch(graph, search)
+        #print(graph[idx].startaddr)
+
+        if idx ==-1:
+            print("Address given not part of any gadget")
+            return []
+
+        if graph[idx].goestoallnodes == 1:
+            return ["*"]
+
+        return graph[idx].EC
     
 
 def IsRegister(s):
+    registers=["rip","rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","eax","ecx","edx","ebx","esp","ebp","esi","edi","ax",             
+                       "cx","dx","bx","sp","bp","si","di","ah","al","ch","cl","dh","dl","bh","bl","spl","bpl","sil","dil"]
     if s in registers:
         return 1
     return 0
@@ -171,36 +309,6 @@ def GetOperandsFromInstruction(I):
 
     return [operandsmembool,instruction,operands]
 
-# Simulate a set of instrumented instructions repetitively to see all valid jump targets.
-# The simulation is done via angr
-def allowedtargetsIC ():
-    Icallreg=globals()['ICreg']
-    for i in range(len(ICstartlist)):
-        allowedtargets=[]
-        for a in alladdress:
-            state = proj.factory.entry_state();
-            #state.regs.rip=state.solver.BVV(0x401203, 64);
-            state.regs.rip=state.solver.BVV(ICstartlist[i], 64);
-            testjmp=state.solver.BVV(int(a,16), 64);
-            toexecute="state.regs."+Icallreg[i]+"=testjmp"
-            exec(toexecute)
-
-            #state.regs.rcx=state.solver.BVV(int(a,16), 64);
-            # state.regs.rax=state.solver.BVS('x', 64);
-            simgr = proj.factory.simulation_manager(state);
-            x=state.regs.rcx;
-            #print(simgr.active[0].regs.rax);
-            #print(simgr.active[0].regs.rip);
-            simgr.step();
-            #print(simgr.active[0].regs.rax);
-            oldrip = simgr.active[0].regs.rip
-            simgr.step();
-            newrip = simgr.active[0].regs.rip
-
-            if (state.solver.eval(oldrip) != state.solver.eval(newrip)):
-                allowedtargets+=[a]
-        globals()['targets']+=[allowedtargets]
-
 # We do not need to do simulation for non CFI instrumented gadgets as it is a waste od time
 # Do a static analysis on gadgets that are not subsequences of CFI instrumented gadgets
 # Return the Equivalence class
@@ -244,10 +352,6 @@ def GetEC(Gadget):
             EC += [operands[0]]
             return EC
 
-        #if instruction == "cmp":
-        #    lastcomparedregs = [operands[0]]
-        #    lastcomparedregs += [operands[1]]
-
         if instruction[0] == 'l' and instruction[1] == 'o' and instruction[2] == 'o' and instruction[3] == 'p':
             if operands[0] not in EC:
                 EC += [operands[0]]
@@ -255,20 +359,6 @@ def GetEC(Gadget):
         if instruction == "ud2":
             if (jumped == 0):
                 return EC
-        #    cmp1=0
-        #    cmp2=0
-
-        #    if len(lastcomparedregs) < 2:
-        #        return EC
-
-        #    if fixedregisters.has_key(lastcomparedregs[0]):
-        #        cmp1=1
-        #    if fixedregisters.has_key(lastcomparedregs[1]):
-        #        cmp2=1
-        #    if not(cmp1) and cmp2:
-        #        fixedregisters[lastcomparedregs[0]] = fixedregisters[lastcomparedregs[1]]
-        #    if cmp1 and not(cmp2):
-        #        fixedregisters[lastcomparedregs[1]] = fixedregisters[lastcomparedregs[0]]
 
         if instruction[0] == 'r' and instruction[1] == 'e' and instruction[2] == 't':
             EC += ["*"]
@@ -285,149 +375,31 @@ def GetEC(Gadget):
 
         jumped=0
     return EC
-
-
-# First extract the gadget list from the binary
-# Then if it is instrumented code we run simulations on it using angr
-# If not we do a simple static analysis and output the equivalence classes
-# Then we construct the graph based on these gadgets
-def AnalyzeGadgetList(bname,depth):
-    RawGadget = os.popen('ROPgadget --depth '+str(depth)+' --dump --binary '+bname).read()
-    ListGadget = RawGadget.split('\n');
-    graph=[]
-    labelmap={}
-    label=0
-    for g in ListGadget:
-        EC=[]
-        if len(g)>=2 and g[0]=='0' and g[1]=='x':
-            Stmt =re.split(': | ; | //',g)
-            #print(Stmt)
-            #EC = GetEC(Stmt)
-            #print(EC)
-            [s1,s2] = Bound(Stmt)
-
-            if (len(globals()['ICstartlist']) >=1):
-                index = BinarySearch(globals()['ICstartlist'],s1)
-            else:
-                index = -1
-
-            if (index!=-1 and (ICstartlist[index] >= s1) and (ICstartlist[index] < s2)):
-                    EC += targets[index]
-            else:
-                EC = GetEC(Stmt)
-                tempEC=[]
-                for e in EC:
-                    if (IsMemLocation(e)):
-                        if ((int(e[2:],16) < s1) or (int(e[2:],16) > s2)):
-                            tempEC += [e[2:]]
-                    else:
-                        tempEC += [e]
- 
-                EC = tempEC
-
-            #print(EC)
-            labelmap[s1]=label
-            graph.append(Gadgets(label,g[1:],s1,s2,EC))
-            label=label+1
-
-    #print(labelmap)
-
-    # Construct the graph
-    for g in graph:
-        for e in g.EC:
-            if e =='*':
-                g.goestoallnodes=1
-                g.nextptr=[]
-                continue
-            if IsRegister(e):
-                g.nextptr=[]
-                g.goestoallnodes=1
-                continue
-            if int(e,16) in labelmap.keys():
-                g.nextptr += [labelmap[int(e,16)]]
  
 
-    for g in graph:
-        print("Gadget no :",g.idno) 
-        print("Instructions are as follows:")
-        print(g.insnlist)
-        print("Can the gadget go to every location? ",g.goestoallnodes)
-        if (g.goestoallnodes == 0):
-            print("Gadgets we can jump to with label no:")
-            print(g.nextptr)
-            print("Absolute addresses this gadget can jump to: ")
-            print(g.EC)
-        print('\n')
+if __name__ == "__main__":
+    binname=sys.argv[1]
+    ge = GadgetExtractor(binname)
 
-    graph.sort(key= lambda d: d.startaddr)
-    globals()['gadgetgraph']=graph
- 
+    print("*********Instrumented code targets*******")
+    print('\n')
+    print("Instrumented code starts at these list of addresses")
+    print(ge.ICstartlist)
+    print('\n')
+    print("Indirect calls jump through values on these registers")
+    print(ge.ICreg)
+    print('\n')
+    print("All allowed targets in hexadecimal per indirect jmp listed below:")
+    print(ge.targets)
+    print('\n')
 
-# Identify regions of instrumented code so that we can run angr simulations to this code later
-def PopulateInstrumentedICList(bname):
-    Address = os.popen('objdump -d '+bname).read().split('\n')
-    state=0
-    length=0
-    startinstrument=''
-    for line in Address:
-        length=len(line)
-        if (length>19 and line[0]==' ' and line[1]==' '):
 
-            globals()['alladdress']+=[line[2:8]]
+    print("********Start of Querying******")
 
-            if (len(line)>=32 and line[32] == 'm' and line[33] == 'o' and line[34] == 'v' and line[35] == 'a'):
-                if (state==0):
-                    state=1
-                    startinstrument=line[2:8]
-                else:
-                    state=0
- 
-            if (length>=32 and line[32] == 'u' and line[33] == 'd' and line[34] == '2'):
-                if (state==1):
-                    state=2
-                else:
-                    state=0
- 
-            if (length>=32 and line[32] == 'c' and line[33] == 'a' and line[34] == 'l'):
-                if (state==2):
-                    globals()['ICendlist']+=[int(line[2:8],16)]
-                    globals()['ICstartlist']+=[int(startinstrument,16)]
-                    [boolarr,insn,operands] = GetOperandsFromInstruction(line[32:])
-                    globals()['ICreg']+=operands
-                state=0
-
-    #print(globals()['ICstartlist'])
-    #print(globals()['ICendlist'])
-    #print(globals()['alladdress'])
-    
-#binname="a.out"
-binname=sys.argv[1]
-proj = angr.Project(binname);
-PopulateInstrumentedICList(binname)
-allowedtargetsIC()
-
-print("*********Instrumented code targets*******")
-print('\n')
-print("Instrumented code starts at these list of addresses")
-print(ICstartlist)
-print('\n')
-print("Indirect calls jump through values on these registers")
-print(ICreg)
-print('\n')
-print("All allowed targets in hexadecimal per indirect jmp listed below:")
-print(targets)
-print('\n')
-print("********Start of Analysis of gadgets******")
-
-# Second argument is depth for ROPgadget to extract gadgets
-AnalyzeGadgetList(binname,100)
-
-print("********Start of Querying******")
-
-while (1):
-    startaddr=input("Enter the start address in hex:  ")
-    if startaddr=='':
-        print("You have supplied an empty string. Please enter a start address. ")
-        continue
-    jmptargets = oracle(startaddr)
-    print(jmptargets)
+    while (1):
+        startaddr=input("Enter the start address in hex:  ")
+        if startaddr=='':
+            print("You have supplied an empty string. Please enter a start address. ")
+            continue
+        jmptargets = ge(startaddr)
+        print(jmptargets)
