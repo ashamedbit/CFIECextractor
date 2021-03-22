@@ -221,6 +221,8 @@ class GadgetExtractor:
 
         for g in graph:
             if (g.idno ==label):
+                if g.goestoallnodes == 1:
+                    return ["*"]
                 return g.nextptr
 
         return -1
