@@ -11,7 +11,6 @@ import angr
 import sys
 import argparse
 
-
 from bisect import bisect_left 
 
 
@@ -198,7 +197,35 @@ class GadgetExtractor:
             return ["*"]
 
         return graph[idx].EC
-    
+
+
+    # This returns Bounds of all instrumented binary code in program
+    # as array of starting address and array of ending address
+    def __GetInstrumentationBoundary__(self):
+        # Convert array of integers to array of hex values manually
+        A=[]
+        B=[]
+        for i in self.ICstartlist:
+            A+=[hex(i)]
+
+        for i in self.ICendlist:
+            B+=[hex(i)]
+ 
+        return [A,B]
+
+    # We labeled each gadget returned by ROPGadget in the same order ROPGadget prints it
+    # We assume ROPGadget returns gadgets in a stable deterministic order
+    # If it can jump to particular gadget label we return gadget label list here
+    def __GadgetIdLinks__(self,label):
+        graph=self.gadgetgraph
+
+        for g in graph:
+            if (g.idno ==label):
+                return g.nextptr
+
+        return -1
+ 
+ 
 
 def IsRegister(s):
     registers=["rip","rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","eax","ecx","edx","ebx","esp","ebp","esi","edi","ax",             
@@ -392,7 +419,9 @@ if __name__ == "__main__":
     print("All allowed targets in hexadecimal per indirect jmp listed below:")
     print(ge.targets)
     print('\n')
-
+    #[x,y] = ge.__GetInstrumentationBoundary__()
+    #x= ge.__GadgetIdLinks__(186)
+    #print(x)
 
     print("********Start of Querying******")
 
