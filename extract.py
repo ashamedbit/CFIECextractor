@@ -78,7 +78,7 @@ class GadgetExtractor:
                     if line[32:36] == 'mova':
                         if state==2:
                             continue
-                         state=1
+                        state=1
                         startinstrument=line[2:8]
  
                     if line[32:35] == 'ud2':
