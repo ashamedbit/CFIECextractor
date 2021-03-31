@@ -238,8 +238,8 @@ class GadgetExtractor:
  
 
 def IsRegister(s):
+    registers=["fs","es","gs","cs","rip","rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","eax","ecx","edx","ebx","esp","ebp","esi","edi","ax","cx","dx","bx","sp","bp","si","di","ah","al","ch","cl","dh","dl","bh","bl","spl","bpl","sil","dil","r8","r8b","r8d","r9","r9b","r10","r10b","r11","r11b","r11d","r12","r12b","r12d","r13","r13b","r13d","r14","r14b","r14d","r15","r15b","r15d"]
 
-    registers=["es","gs","cs","rip","rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","eax","ecx","edx","ebx","esp","ebp","esi","edi","ax","cx","dx","bx","sp","bp","si","di","ah","al","ch","cl","dh","dl","bh","bl","spl","bpl","sil","dil","r8","r8b","r8d","r9","r9b","r10","r10b","r11","r11b","r12","r12b","r13","r13b","r14","r14b","r15","r15b"]
     if s in registers:
         return 1
     return 0
