@@ -49,10 +49,12 @@ class GadgetExtractor:
         # Allowed targets for each indirect jump in the same order as above
         self.targets=[]
         
+        print("Calculating instrumented code regions boundary....")
         self._populateInstrumentedICList(binname)
-        print("Calculated instrumented code regions")
+        print("Finished calculating instrumented code regions boundary")
+        print("Now simulate  instrumented regions with possible address....")
         self._allowedtargetsIC()
-        print("Simulated all instrumented code regions with possible targets")
+        print("Finished simulating all instrumented code regions with possible targets")
         self._analyzeGadgetList(binname,100)
 
     def _populateInstrumentedICList(self, bname):
@@ -74,12 +76,11 @@ class GadgetExtractor:
 
                 if length >= 32:
                     if line[32:36] == 'mova':
-                        if state == 0:
-                            state = 1
-                            startinstrument=line[2:8]
-                        else:
-                            state = 0
-
+                        if state==2:
+                            continue
+                         state=1
+                        startinstrument=line[2:8]
+ 
                     if line[32:35] == 'ud2':
                         if state == 1:
                             state = 2
