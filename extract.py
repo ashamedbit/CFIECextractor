@@ -43,11 +43,16 @@ class GadgetExtractor:
         self.ICendlist=[]
         self.ICreg=[]
 
+        # List of allowed targets according to LLVM-CFI for instrumented code
+        self.simangrtargetaddr=[]
+
         # Allowed targets for each indirect jump in the same order as above
         self.targets=[]
         
         self._populateInstrumentedICList(binname)
+        print("Calculated instrumented code regions")
         self._allowedtargetsIC()
+        print("Simulated all instrumented code regions with possible targets")
         self._analyzeGadgetList(binname,100)
 
     def _populateInstrumentedICList(self, bname):
@@ -60,6 +65,12 @@ class GadgetExtractor:
             if (length>19 and line[0]==' ' and line[1]==' '):
 
                 self.alladdress += [line[2:8]]
+
+                # To reduce number of targets for LLVM cfi we can look at functions with .cfi appended to them. 
+                # This is a neat indicator of net pool of valid jump targets for instrumented code. 
+                # All we have to do is find the mappings of instrumented gadgets to .cfi functions
+                if ".cfi>" in line:
+                    self.simangrtargetaddr+=[line[2:8]]
 
                 if length >= 32:
                     if line[32:36] == 'mova':
@@ -77,9 +88,11 @@ class GadgetExtractor:
 
                     if line[32:35] == 'cal':
                         if state == 2:
+                            [boolarr,insn,operands] = GetOperandsFromInstruction(line[32:])
+                            if (not(len(operands)>=1 and IsRegister(operands[0]))):
+                                continue
                             self.ICendlist += [int(line[2:8],16)]
                             self.ICstartlist += [int(startinstrument,16)]
-                            [boolarr,insn,operands] = GetOperandsFromInstruction(line[32:])
                             self.ICreg += operands
                         
                         state = 0 
@@ -88,24 +101,18 @@ class GadgetExtractor:
     # The simulation is done via angr
     def _allowedtargetsIC (self):
 
-        for i in range(len(self.ICstartlist)):
+        for i in range(len(self.ICreg)):
             allowedtargets=[]
-            for a in self.alladdress:
+            for a in self.simangrtargetaddr:
                 state = self.proj.factory.entry_state();
-                #state.regs.rip=state.solver.BVV(0x401203, 64);
                 state.regs.rip=state.solver.BVV(self.ICstartlist[i], 64);
                 testjmp=state.solver.BVV(int(a,16), 64);
                 toexecute="state.regs."+self.ICreg[i]+"=testjmp"
                 exec(toexecute)
 
-                #state.regs.rcx=state.solver.BVV(int(a,16), 64);
-                # state.regs.rax=state.solver.BVS('x', 64);
                 simgr = self.proj.factory.simulation_manager(state);
                 x=state.regs.rcx;
-                #print(simgr.active[0].regs.rax);
-                #print(simgr.active[0].regs.rip);
                 simgr.step();
-                #print(simgr.active[0].regs.rax);
                 oldrip = simgr.active[0].regs.rip
                 simgr.step();
                 newrip = simgr.active[0].regs.rip
@@ -132,7 +139,7 @@ class GadgetExtractor:
                     index = -1
 
                 if (index!=-1 and (self.ICstartlist[index] >= s1) and (self.ICstartlist[index] < s2)):
-                        EC += self.targets[index]
+                    EC += self.targets[index]
                 else:
                     EC = GetEC(Stmt)
                     tempEC=[]
@@ -230,8 +237,8 @@ class GadgetExtractor:
  
 
 def IsRegister(s):
-    registers=["rip","rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","eax","ecx","edx","ebx","esp","ebp","esi","edi","ax",             
-                       "cx","dx","bx","sp","bp","si","di","ah","al","ch","cl","dh","dl","bh","bl","spl","bpl","sil","dil"]
+
+    registers=["es","gs","cs","rip","rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","eax","ecx","edx","ebx","esp","ebp","esi","edi","ax","cx","dx","bx","sp","bp","si","di","ah","al","ch","cl","dh","dl","bh","bl","spl","bpl","sil","dil","r8","r8b","r8d","r9","r9b","r10","r10b","r11","r11b","r12","r12b","r13","r13b","r14","r14b","r15","r15b"]
     if s in registers:
         return 1
     return 0
@@ -239,9 +246,10 @@ def IsRegister(s):
 def IsMemLocation(s):
     if len(s)>=2 and s[0]=='0' and s[1]=='x':
         return 1
-    if len(s)==1 and s[0]=='0':
+    if len(s)==1 and s[0]>='0' and s[0]<='9':
         return 1
- 
+    if len(s)>=2 and s[0]=='-' and s[1]>='0' and s[1]<='9':
+        return 1
     return 0
 
 def GadgetBinarySearch(graph, target):
@@ -324,7 +332,7 @@ def GetOperandsFromInstruction(I):
             if len(y)==1 and len(y[0])>=2 and y[0][0]=='0' and y[0][1]=='x':
                 operands += [y[0]]
                 continue
-            if len(y)==1 and len(y[0])==1 and y[0][0]=='0':
+            if len(y)==1 and len(y[0])==1 and y[0][0]>='0' and y[0][0]<='9':
                 operands += [y[0]]
                 continue
 
