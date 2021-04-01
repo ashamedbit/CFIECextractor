@@ -56,6 +56,8 @@ class GadgetExtractor:
         self._allowedtargetsIC()
         print("Finished simulating all instrumented code regions with possible targets")
         self._analyzeGadgetList(binname,100)
+        self.__calculateAIR()
+
 
     def _populateInstrumentedICList(self, bname):
         Address = os.popen('objdump -d '+bname).read().split('\n')
@@ -128,9 +130,13 @@ class GadgetExtractor:
         graph=[]
         labelmap={}
         label=0
+        reducedgadgets=0
+        totalgadgets=0
+ 
         for g in ListGadget:
             EC=[]
             if len(g)>=2 and g[0]=='0' and g[1]=='x':
+                totalgadgets=totalgadgets+1
                 Stmt =re.split(': | ; | //',g)
                 [s1,s2] = Bound(Stmt)
 
@@ -141,6 +147,7 @@ class GadgetExtractor:
 
                 if (index!=-1 and (self.ICstartlist[index] >= s1) and (self.ICstartlist[index] < s2)):
                     EC += self.targets[index]
+                    reducedgadgets=reducedgadgets+1
                 else:
                     EC = GetEC(Stmt)
                     tempEC=[]
@@ -158,6 +165,8 @@ class GadgetExtractor:
                 graph.append(Gadgets(label,g[1:],s1,s2,EC))
                 label=label+1
 
+        print("The gadget reduction is :")
+        print(reducedgadgets/totalgadgets)
 
         for g in graph:
             for e in g.EC:
@@ -234,6 +243,16 @@ class GadgetExtractor:
                 return g.nextptr
 
         return -1
+
+    def __calculateAIR(self):
+        print("Calculating AIR :")
+        binsize=int(self.alladdress[len(self.alladdress)-1],16)- int(self.alladdress[0],16)
+        AIR=0
+        for i in self.targets:
+            AIR=AIR+(1-(len(i)/binsize))
+        AIR=AIR/len(self.targets)
+        print(AIR)
+ 
  
  
 
